@@ -1,7 +1,7 @@
 // src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { db } from './firebase';
-import './styles.css'
+import './styles.css';
 import { 
   collection, 
   onSnapshot, 
@@ -33,7 +33,7 @@ export default function App() {
   const [loginInput, setLoginInput] = useState({ username: '', password: '' });
   const [newCreds, setNewCreds] = useState({ username: '', password: '' });
   
-  // App Logic States
+  // Database Synced Global App States
   const [newName, setNewName] = useState('');
   const [waterAlert, setWaterAlert] = useState(false);
   const [skippedIds, setSkippedIds] = useState([]);
@@ -42,22 +42,26 @@ export default function App() {
 
   // Firestore Real-time Listeners
   useEffect(() => {
+    // 1. Fetch Members
     const qMembers = query(collection(db, 'water_members'));
     const unsubMembers = onSnapshot(qMembers, (snapshot) => {
       setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       setLoading(false);
     });
 
+    // 2. Fetch Logs
     const qLogs = query(collection(db, 'water_logs'), orderBy('timestamp', 'desc'));
     const unsubLogs = onSnapshot(qLogs, (snapshot) => {
       setLogs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    // 3. Fetch Pending Requests
     const qPending = query(collection(db, 'water_pending'), orderBy('timestamp', 'desc'));
     const unsubPending = onSnapshot(qPending, (snapshot) => {
       setPendingRequests(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    // 4. Fetch Admin Credentials
     const unsubAdmin = onSnapshot(doc(db, 'settings', 'admin_config'), (docSnap) => {
       if (docSnap.exists()) {
         setAdminCreds(docSnap.data());
@@ -66,13 +70,43 @@ export default function App() {
       }
     });
 
+    // 5. Fetch Global App State (Alert & Skips - Real-time Sync Across All Devices)
+    const unsubAppState = onSnapshot(doc(db, 'settings', 'app_state'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setWaterAlert(data.waterAlert || false);
+        setSkippedIds(data.skippedIds || []);
+      } else {
+        setDoc(doc(db, 'settings', 'app_state'), { waterAlert: false, skippedIds: [] });
+      }
+    });
+
     return () => {
       unsubMembers();
       unsubLogs();
       unsubPending();
       unsubAdmin();
+      unsubAppState();
     };
   }, []);
+
+  // Sync Water Alert to DB
+  const toggleWaterAlert = async () => {
+    const nextAlertState = !waterAlert;
+    await setDoc(doc(db, 'settings', 'app_state'), { skippedIds }, { merge: true });
+    await updateDoc(doc(db, 'settings', 'app_state'), { waterAlert: nextAlertState });
+  };
+
+  // Sync Skip Person to DB
+  const handleSkipPerson = async (id) => {
+    const newSkipped = [...skippedIds, id];
+    await updateDoc(doc(db, 'settings', 'app_state'), { skippedIds: newSkipped });
+  };
+
+  // Sync Reset Skips to DB
+  const handleResetSkips = async () => {
+    await updateDoc(doc(db, 'settings', 'app_state'), { skippedIds: [] });
+  };
 
   // Admin Login Handle
   const handleAdminLogin = (e) => {
@@ -158,7 +192,8 @@ export default function App() {
     }
 
     await deleteDoc(doc(db, 'water_pending', pendingItem.id));
-    setWaterAlert(false);
+    // Clear Alert & Skips on Approval
+    await updateDoc(doc(db, 'settings', 'app_state'), { waterAlert: false, skippedIds: [] });
   };
 
   // Admin Action: Reject Pending Request
@@ -271,16 +306,16 @@ export default function App() {
                 <button style={styles.doneBtn} onClick={() => handleUserSubmitRequest(nextPerson)}>
                   <CheckCircle2 size={18} /> I Brought Water
                 </button>
-                <button style={styles.skipBtn} onClick={() => setSkippedIds([...skippedIds, nextPerson.id])}>
+                <button style={styles.skipBtn} onClick={() => handleSkipPerson(nextPerson.id)}>
                   <SkipForward size={18} /> Skip (Not Home)
                 </button>
               </div>
             </div>
           ) : (
-            <p style={{textAlign: 'center', color: '#64748b'}}>All members skipped. <button onClick={() => setSkippedIds([])} style={styles.linkBtn}>Reset Skips</button></p>
+            <p style={{textAlign: 'center', color: '#64748b'}}>All members skipped. <button onClick={handleResetSkips} style={styles.linkBtn}>Reset Skips</button></p>
           )}
 
-          <button style={styles.alertTriggerBtn} onClick={() => setWaterAlert(!waterAlert)}>
+          <button style={styles.alertTriggerBtn} onClick={toggleWaterAlert}>
             <AlertTriangle size={18} /> {waterAlert ? 'Clear Water Alert' : 'Report Water Empty!'}
           </button>
 
@@ -406,9 +441,9 @@ export default function App() {
   );
 }
 
-// Fixed Clean Styling System
+// Styling System
 const styles = {
-  container: { maxWidth: '420px', width:'100%',margin: '0 auto', padding: '15px', fontFamily: 'system-ui, sans-serif', backgroundColor: '#f8fafc', minHeight: '100vh' },
+  container: { maxWidth: '420px', width: '100%', margin: '0 auto', padding: '15px', fontFamily: 'system-ui, sans-serif', backgroundColor: '#f8fafc', minHeight: '100vh', boxSizing: 'border-box' },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '15px' },
   title: { fontSize: '20px', margin: 0, color: '#0284c7', fontWeight: 'bold' },
   adminBadge: { border: 'none', backgroundColor: '#0284c7', color: '#ffffff', padding: '8px 14px', borderRadius: '20px', fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' },
@@ -429,7 +464,7 @@ const styles = {
   input: { flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', boxSizing: 'border-box', fontSize: '14px' },
   addBtn: { backgroundColor: '#0f172a', color: '#ffffff', border: 'none', padding: '10px 14px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'bold', fontSize: '13px' },
   cancelBtn: { backgroundColor: '#e2e8f0', border: 'none', padding: '10px 14px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: '#475569' },
-  card: { backgroundColor: '#ffffff', padding: '15px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: '15px' },
+  card: { backgroundColor: '#ffffff', padding: '15px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: '15px', minHeight: '250px' },
   row: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f1f5f9' },
   logRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f1f5f9' },
   smallBtn: { backgroundColor: '#e2e8f0', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', color: '#0f172a', fontSize: '12px' },
